@@ -1,142 +1,106 @@
-# Отчёт. Модуль 04 — Product API: DTO, AutoMapper, Repository и EF Core
+# Лабораторная работа — Модуль 04: Product API с EF Core
 
-**Некоммерческое АО «Казахский национальный исследовательский технический университет имени К.И. Сатпаева»**  
-Институт Автоматики и информационных технологий · Кафедра Программной инженерии  
-CSE5032 «Разработка веб-сервисов» · Самостоятельная работа студентов с преподавателем  
-Зав. кафедры ПИ: Абдолдина Ф. Н. · Экзаменатор: Герцен Е. А.
+**CSE5032 · Разработка веб-сервисов · Модуль 04**
 
-**Тема:** создание Web API для управления товарами с использованием EF Core, Code First, Repository, DTO и AutoMapper.
+Задание — построить API товаров с БД и разделением ответственности. EF Core сопоставляет классы с SQLite, миграция создаёт схему. Контроллер использует Repository, а не `DbContext` напрямую. Для клиента подготовлен DTO без Category, преобразованием занимается AutoMapper. Формат тела ответа унифицирован через `ReturnResult`, но HTTP-коды остаются. Покажу CRUD и объясню цепочку от контроллера через Repository и EF Core до базы.
 
-## Цель и краткий отчёт
+---
 
-Цель работы — научиться отделять API от доступа к данным и преобразовывать сущности базы в DTO. Создано ASP.NET Core Web API `WebApiLab4` на стандартном шаблоне с контроллерами и Swagger. Данные сохраняются в SQLite; схема создаётся и обновляется миграцией EF Core. CRUD-запросы проходят через `IProductRepository`, а клиент получает единый контракт `ReturnResult<T>`.
+## Цель
 
-В `Product` есть `Id`, `Name`, `Price`, `Category`. В соответствии с условием `ProductDto` намеренно содержит только `Id`, `Name`, `Price`: категория остаётся во внутренней модели и не передаётся в ответах. Для POST и PUT добавлен отдельный входной `ProductInputDto` с категорией, чтобы она могла сохраняться при записи.
+Построить Web API товаров с EF Core и Code First, изолировать работу с данными через Repository и возвращать клиенту DTO в едином контракте.
 
-## Архитектура
+## Краткий отчёт
 
-```text
-Клиент / Swagger
-      ↓
-ProductsController
-      ↓  IMapper
-ProductInputDto ↔ ProductDto
-      ↓  IProductRepository
-ProductRepository
-      ↓
-AppDbContext / DbSet<Product>
-      ↓  EF Core + миграции
-SQLite (products.db)
-```
+Для хранения используется SQLite (`products.db`). Миграция применяется при запуске. `ProductsController` вызывает `IProductRepository`, а не `AppDbContext`; AutoMapper преобразует сущности и входные данные. В ответах используется `ReturnResult<T>` с полями `isSuccess`, `result`, `errorMessage` и сохраняются соответствующие HTTP status codes.
 
-| Компонент | Назначение в проекте |
-| --- | --- |
-| `Product` | Entity товара, сохраняемая в таблицу `Products`; включает внутреннее поле `Category`. |
-| `ProductDto` | Контракт чтения для API: только `Id`, `Name`, `Price`; не раскрывает `Category`. |
-| `ProductInputDto` | Входные поля POST/PUT, включая категорию, с проверкой обязательных значений и диапазона цены. |
-| `AppDbContext` | Контекст EF Core и `DbSet<Product> Products`; описывает конфигурацию и начальные записи. |
-| `IProductRepository` / `ProductRepository` | Репозиторий изолирует запросы и сохранение; контроллер не обращается к `AppDbContext` напрямую. |
-| `AutoMapperProfile` | Содержит требуемый `CreateMap<Product, ProductDto>().ReverseMap()` и отображение входного DTO в Entity. Свойства не копируются вручную в контроллере. |
-| `ReturnResult<T>` | Единая оболочка ответа: `isSuccess`, `result`, `errorMessage`. HTTP-коды при этом сохраняются: например, `201`, `400` и `404`. |
+## Выполнение по шагам
 
-## Пошаговое выполнение
+| Шаг по заданию | Реализация | Для чего |
+|---|---|---|
+| 1. Модель и конфигурация | `Product`; строка SQLite находится в `appsettings.json` | Описать товар и не хранить настройки БД в коде контроллера |
+| 2. Контекст | `AppDbContext : DbContext` с `DbSet<Product>` | Работать с таблицей товаров и отслеживать изменения |
+| 3. Code First | Создана EF Core миграция; `Database.Migrate()` применяется при старте | Создать или обновить схему базы по моделям |
+| 4. Repository | Созданы `IProductRepository` и `ProductRepository`; зарегистрирован через DI | Скрыть детали запросов EF Core от контроллера |
+| 5. DTO | `ProductDto` содержит `Id`, `Name`, `Price`; поля `Category` в DTO ответа нет | Ограничить публичные данные ответа |
+| 6. AutoMapper | Настроены `Product ↔ ProductDto` и преобразование входной модели | Не копировать свойства вручную в контроллере |
+| 7. ReturnResult | Успешные и ошибочные ответы используют общий класс | Сохранять одинаковую структуру тела вместе с HTTP-кодом |
+| 8. CRUD | Реализованы GET списка/по Id, POST, PUT и DELETE | Управлять товарами через API |
+| 9. Проверка | Swagger: 400, создание, чтение, обновление, удаление и повторный GET | Проверить контракт и HTTP-статусы |
 
-1. Создан ASP.NET Core Web API проект с контроллером и Swagger.
-2. Добавлена Entity `Product`; ограничения задают обязательные имя и категорию, длину строк и положительную цену.
-3. Создан `AppDbContext` с `DbSet<Product>` и настройкой точности `Price`. Строка SQLite находится в `appsettings.json` (`ConnectionStrings:DefaultConnection`).
-4. Создана миграция `InitialCreate`; она создаёт таблицу `Products` и добавляет три демонстрационные записи. Миграция применяется при старте через `Database.Migrate()`.
-5. Созданы `IProductRepository` и `ProductRepository` с асинхронными методами получения списка, поиска по ID, создания, изменения и удаления.
-6. Добавлены `ProductDto` и входной `ProductInputDto`. `Category` отсутствует в DTO ответа — это проверяется в ответах Swagger.
-7. Зарегистрированы SQLite `AppDbContext`, scoped-репозиторий и AutoMapper в `Program.cs`; профиль настроен через `CreateMap<Product, ProductDto>().ReverseMap()`.
-8. В `ProductsController` реализованы пять заданных маршрутов. Все обращения к данным выполняются через репозиторий, преобразование — через AutoMapper.
-9. В Swagger выполнены GET списка, POST с некорректными и корректными данными, GET по ID, PUT, DELETE и GET удалённого ID. Ответы и SQL-логи сохранены в `docs/`.
+## Модель `Product` и ответ DTO
 
-Для повторного запуска из папки проекта:
+| Поле сущности | Тип | Публичное в `ProductDto` |
+|---|---|---|
+| `Id` | `int` | Да |
+| `Name` | `string` | Да |
+| `Price` | `decimal` | Да |
+| `Category` | `string` | Нет — намеренно исключено из DTO |
 
-```powershell
-dotnet run --urls http://127.0.0.1:5086
-```
+## Endpoint
 
-Swagger UI: `http://127.0.0.1:5086/swagger`.
+| Метод | Endpoint | Успешный ответ | Основная ошибка |
+|---|---|---|---|
+| `GET` | `/api/products` | `200 OK` — список DTO | — |
+| `GET` | `/api/products/{id}` | `200 OK` — один DTO | `404 Not Found` |
+| `POST` | `/api/products` | `201 Created` — созданный DTO | `400 Bad Request` |
+| `PUT` | `/api/products/{id}` | `200 OK` — обновлённый DTO | `400` / `404` |
+| `DELETE` | `/api/products/{id}` | `200 OK` — результат удаления | `404 Not Found` |
 
-## Endpoint и HTTP-результаты
-
-| Метод | Маршрут | Назначение | Фактически проверено |
-| --- | --- | --- | --- |
-| `GET` | `/api/products` | Получить список товаров | `200 OK` |
-| `GET` | `/api/products/{id}` | Получить товар по ID | `200 OK`; отсутствующий ID — `404 Not Found` |
-| `POST` | `/api/products` | Создать товар | `201 Created`; невалидные поля — `400 Bad Request` |
-| `PUT` | `/api/products/{id}` | Обновить товар по ID | `200 OK`; отсутствующий ID — `404 Not Found` |
-| `DELETE` | `/api/products/{id}` | Удалить товар по ID | `200 OK`; отсутствующий ID — `404 Not Found` |
-
-## Примеры JSON
-
-Тело POST/PUT включает категорию, необходимую Entity и базе:
-
-```json
-{
-  "name": "Игровая мышь",
-  "price": 24990,
-  "category": "Периферия"
-}
-```
-
-Успешный ответ API использует заданный единый контракт. Поле `category` намеренно не возвращается:
+## Пример ответа JSON
 
 ```json
 {
   "isSuccess": true,
   "result": {
-    "id": 4,
-    "name": "Игровая мышь",
-    "price": 24990
+    "id": 1,
+    "name": "Ноутбук",
+    "price": 350000
   },
   "errorMessage": []
 }
 ```
 
-Для ошибки валидации API возвращает HTTP `400` и тот же формат с `isSuccess: false`, `result: null` и текстами ошибок в `errorMessage`.
+## Проверка и скриншоты
 
-## Скриншоты Swagger
+Каждая иллюстрация подтверждает отдельный запрос или запуск; изображения сохранены в `docs`.
 
-Каждый снимок ниже сделан в Swagger UI после нажатия **Try it out** и **Execute**. Для каждого запроса сохранён отдельный файл.
+### Шаг 1. Swagger: доступные операции
 
-### Маршруты API в Swagger
+![Список endpoint Products API](docs/swagger-endpoints.png)
 
-![Список реализованных endpoint Products API](docs/swagger-endpoints.png)
+### Шаг 2. Список товаров — `GET /api/products`
 
-### 1. Получение списка — GET 200
+![GET списка — 200 OK](docs/get-all-200.png)
 
-![GET api/products: список демонстрационных товаров и ответ 200](docs/get-all-200.png)
+### Шаг 3. Проверка валидации — `POST /api/products` → 400
 
-### 2. Проверка валидации — POST 400
+![Пустые поля: Bad Request и ошибки в ReturnResult](docs/post-validation-400.png)
 
-![POST api/products с пустыми полями: Bad Request 400 в ReturnResult](docs/post-validation-400.png)
+### Шаг 4. Создание — `POST /api/products` → 201
 
-### 3. Создание товара — POST 201
+![Созданный товар; Category отсутствует в DTO](docs/post-create-201.png)
 
-![POST api/products: товар создан, ответ 201; в result нет Category](docs/post-create-201.png)
+### Шаг 5. Чтение по Id — `GET /api/products/{id}`
 
-### 4. Получение созданного товара — GET 200
+![Результат содержит Id, Name и Price без Category](docs/get-by-id-200.png)
 
-![GET api/products по ID: результат содержит Id, Name и Price без Category](docs/get-by-id-200.png)
+### Шаг 6. Обновление — `PUT /api/products/{id}`
 
-### 5. Изменение товара — PUT 200
+![Товар изменён — 200 OK](docs/put-update-200.png)
 
-![PUT api/products по ID: свойства товара изменены, ответ 200](docs/put-update-200.png)
+### Шаг 7. Удаление — `DELETE /api/products/{id}`
 
-### 6. Удаление товара — DELETE 200
+![Удаление товара — успешный результат](docs/delete-200.png)
 
-![DELETE api/products по ID: успешное удаление](docs/delete-200.png)
+### Шаг 8. Проверка после удаления
 
-### 7. Проверка после удаления — GET 404
+![Повторный GET: 404 и isSuccess false](docs/get-after-delete-404.png)
 
-![GET удалённого товара: HTTP 404 и isSuccess false](docs/get-after-delete-404.png)
+### Журнал EF Core
 
-### Логи EF Core в PowerShell
-
-![Окно PowerShell с реальными SQL-командами EF Core при запросах к Products](docs/powershell-logs.png)
+![PowerShell с SQL-командами EF Core](docs/powershell-logs.png)
 
 ## Вывод
 
-Разработан Web API для управления товарами по заданной цепочке Database → EF Core → Repository → AutoMapper → DTO → Controller → API Response. Code First-миграция создаёт базу, репозиторий изолирует доступ к ней, а DTO скрывает `Category` от клиента. В Swagger проверен полный CRUD, валидация `400` и `404` для удалённого товара; HTTP status codes не подменяются единым телом ответа.
+Реализована требуемая цепочка `Controller → Repository → EF Core → SQLite` и `Entity → AutoMapper → DTO → ReturnResult`. CRUD проверен в Swagger.
